@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pesquisa de Termos em PDF</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.min.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        line-height: 1.6;
+        color: #333;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .card {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+      }
+      .card-title {
+        font-size: 1.5em;
+        margin-bottom: 15px;
+      }
+      textarea {
+        width: 100%;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
+      .file-drop {
+        border: 2px dashed #ccc;
+        border-radius: 8px;
+        padding: 20px;
+        text-align: center;
+        cursor: pointer;
+        margin-bottom: 20px;
+      }
+      .file-drop:hover {
+        border-color: #aaa;
+      }
+      .error {
+        color: red;
+        margin-bottom: 10px;
+      }
+      .result {
+        background-color: #f0f0f0;
+        padding: 10px;
+        margin-bottom: 10px;
+        border-radius: 4px;
+      }
+      .result p {
+        margin: 5px 0;
+      }
+      .context {
+        font-size: 0.9em;
+        color: #555;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1 class="card-title">Pesquisa de Termos em PDF</h1>
+      <div>
+        <label for="terms">Digite os termos de pesquisa (um por linha):</label>
+        <textarea
+          id="terms"
+          rows="5"
+          placeholder="Digite os termos aqui..."
+        ></textarea>
+      </div>
+      <div id="file-drop" class="file-drop">
+        <p>Clique ou arraste e solte seu PDF aqui</p>
+      </div>
+      <input
+        type="file"
+        id="file-input"
+        accept="application/pdf"
+        style="display: none"
+      />
+      <div id="error" class="error"></div>
+      <div id="loading" style="display: none">Processando PDF...</div>
+      <div id="results"></div>
+    </div>
+
+    <script>
+      const terms = document.getElementById("terms");
+      const fileDrop = document.getElementById("file-drop");
+      const fileInput = document.getElementById("file-input");
+      const error = document.getElementById("error");
+      const loading = document.getElementById("loading");
+      const results = document.getElementById("results");
+
+      let pdfText = "";
+
+      fileDrop.addEventListener("click", () => fileInput.click());
+      fileDrop.addEventListener("dragover", preventDefault);
+      fileDrop.addEventListener("drop", handleFileDrop);
+      fileInput.addEventListener("change", handleFileSelect);
+      terms.addEventListener("input", handleTermsChange);
+
+      function preventDefault(e) {
+        e.preventDefault();
+      }
+
+      function handleFileDrop(e) {
+        preventDefault(e);
+        const file = e.dataTransfer.files[0];
+        processFile(file);
+      }
+
+      function handleFileSelect(e) {
+        const file = e.target.files[0];
+        processFile(file);
+      }
+
+      function handleTermsChange() {
+        if (pdfText) {
+          const searchTerms = terms.value
+            .split("\n")
+            .filter((term) => term.trim() !== "");
+          const searchResults = searchInText(pdfText, searchTerms);
+          displayResults(searchResults);
+        }
+      }
+
+      async function processFile(file) {
+        if (file && file.type === "application/pdf") {
+          error.textContent = "";
+          loading.style.display = "block";
+          fileDrop.textContent = file.name;
+          try {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer })
+              .promise;
+            pdfText = "";
+            for (let i = 1; i <= pdf.numPages; i++) {
+              const page = await pdf.getPage(i);
+              const textContent = await page.getTextContent();
+              pdfText +=
+                textContent.items.map((item) => item.str).join(" ") + " ";
+            }
+            console.log("pdfText: " + pdfText);
+            const searchTerms = terms.value
+              .split("\n")
+              .filter((term) => term.trim() !== "");
+            const searchResults = searchInText(pdfText, searchTerms);
+            displayResults(searchResults);
+          } catch (err) {
+            error.textContent = "Erro ao processar o PDF: " + err.message;
+          } finally {
+            loading.style.display = "none";
+          }
+        } else {
+          error.textContent = "Por favor, selecione um arquivo PDF válido.";
+        }
+      }
+
+      function searchInText(text, searchTerms) {
+        const results = [];
+        searchTerms.forEach((term) => {
+          const regex = new RegExp(`(.{0,200})${term}(.{0,200})`, "gi");
+          const matches = [];
+          let match;
+          while ((match = regex.exec(text)) !== null) {
+            matches.push(
+              match[0].replace(
+                new RegExp(`(${term})`, "gi"),
+                "<strong>$1</strong>"
+              )
+            );
+          }
+          if (matches.length > 0) {
+            results.push({
+              term,
+              found: true,
+              occurrences: matches.length,
+              contexts: matches,
+            });
+          } else {
+            results.push({ term, found: false, occurrences: 0 });
+          }
+        });
+        return results;
+      }
+
+      function displayResults(searchResults) {
+        results.innerHTML = "<h2>Resultados da Pesquisa:</h2>";
+        searchResults.forEach((result) => {
+          const resultDiv = document.createElement("div");
+          resultDiv.className = "result";
+          resultDiv.innerHTML = `
+                    <p><strong>${result.term}</strong>: ${
+            result.found
+              ? `Encontrado (${result.occurrences} ocorrências)`
+              : "Não encontrado"
+          }</p>
+                    ${
+                      result.found
+                        ? result.contexts
+                            .map(
+                              (context) => `<p class="context">${context}</p>`
+                            )
+                            .join("")
+                        : ""
+                    }
+                `;
+          results.appendChild(resultDiv);
+        });
+      }
+    </script>
+  </body>
+</html>
