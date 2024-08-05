@@ -262,13 +262,16 @@
               const regex = new RegExp(`(.{0,400}${term}.{0,400})`, "gi");
               let match;
 
-              const searchText = previousPage && nextPage
-                ? previousPage.text.slice(-400) + page.text + nextPage.text.slice(0, 400)
-                : previousPage
-                  ? previousPage.text.slice(-400) + page.text
+              const searchText =
+                previousPage && nextPage
+                  ? previousPage.text.slice(-100) +
+                    page.text +
+                    nextPage.text.slice(0, 100)
+                  : previousPage
+                  ? previousPage.text.slice(-100) + page.text
                   : nextPage
-                    ? page.text + nextPage.text.slice(0, 400)
-                    : page.text;
+                  ? page.text + nextPage.text.slice(0, 100)
+                  : page.text;
 
               while ((match = regex.exec(searchText)) !== null) {
                 const context = match[1].replace(
@@ -279,7 +282,9 @@
                   page: page.number,
                   context: context,
                 });
-                termResult.occurrences++;
+                termResult.occurrences += (
+                  match[1].match(new RegExp(term, "gi")) || []
+                ).length;
                 termResult.found = true;
 
                 // Update result in real-time
