@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Pesquisa de Termos em PDF</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.9.359/pdf.min.js"></script>
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs"
+      type="module"
+    ></script>
     <style>
       body {
         font-family: Arial, sans-serif;
@@ -27,7 +30,10 @@
       textarea {
         width: 100%;
         padding: 10px;
-        margin-bottom: 10px;
+        margin-bottom: 0px;
+      }
+      button {
+        margin-bottom: 20px;
       }
       .file-drop {
         border: 2px dashed #ccc;
@@ -56,6 +62,25 @@
       .context {
         font-size: 0.9em;
         color: #555;
+        padding-bottom: 20px;
+      }
+      div#progress-bar {
+        margin-bottom: 20px;
+        height: 20px;
+        background-color: #ddd;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      div#progress-bar-fill {
+        height: 100%;
+        width: 0;
+        background-color: #4caf50;
+        transition: width 0.3s ease-in-out;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        color: white;
+        font-weight: bold;
       }
     </style>
   </head>
@@ -80,11 +105,20 @@
         style="display: none"
       />
       <div id="error" class="error"></div>
-      <div id="loading" style="display: none">Processando PDF...</div>
+      <div id="loading" style="display: none">Carregando PDF...</div>
+      <div id="progress-bar">
+        <div id="progress-bar-fill"></div>
+      </div>
       <div id="results"></div>
     </div>
 
     <script>
+      document.addEventListener("DOMContentLoaded", function () {
+        // Ensure pdfjsLib is defined
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.mjs";
+      });
+
       const terms = document.getElementById("terms");
       const fileDrop = document.getElementById("file-drop");
       const fileInput = document.getElementById("file-input");
@@ -92,13 +126,15 @@
       const loading = document.getElementById("loading");
       const results = document.getElementById("results");
 
-      let pdfText = "";
+      let pages = [];
+      let debounceTimer;
+      let currentSearchController = null;
 
       fileDrop.addEventListener("click", () => fileInput.click());
       fileDrop.addEventListener("dragover", preventDefault);
       fileDrop.addEventListener("drop", handleFileDrop);
       fileInput.addEventListener("change", handleFileSelect);
-      terms.addEventListener("input", handleTermsChange);
+      terms.addEventListener("input", debounceHandleTermsChange);
 
       function preventDefault(e) {
         e.preventDefault();
@@ -115,13 +151,29 @@
         processFile(file);
       }
 
+      const searchButton = document.getElementById("search-button");
+      searchButton.addEventListener("click", handleTermsChange);
+
+      function debounceHandleTermsChange() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(handleTermsChange, 300);
+      }
+
       function handleTermsChange() {
-        if (pdfText) {
+        if (pages.length > 0) {
           const searchTerms = terms.value
             .split("\n")
             .filter((term) => term.trim() !== "");
-          const searchResults = searchInText(pdfText, searchTerms);
-          displayResults(searchResults);
+
+          // Cancel the previous search if it's still ongoing
+          if (currentSearchController) {
+            currentSearchController.abort();
+          }
+
+          // Create a new AbortController for this search
+          currentSearchController = new AbortController();
+
+          searchInTextAsync(pages, searchTerms, currentSearchController.signal);
         }
       }
 
@@ -134,21 +186,39 @@
             const arrayBuffer = await file.arrayBuffer();
             const pdf = await pdfjsLib.getDocument({ data: arrayBuffer })
               .promise;
-            pdfText = "";
+            pages = [];
+
             for (let i = 1; i <= pdf.numPages; i++) {
               const page = await pdf.getPage(i);
               const textContent = await page.getTextContent();
-              pdfText +=
-                textContent.items.map((item) => item.str).join(" ") + " ";
+              let pageText = textContent.items
+                .map((item) => item.str)
+                .join(" ");
+
+              // remove double spaces and new lines
+              pageText = pageText.replace(/\s\s+/g, " ").replace(/\n/g, " ");
+
+              pages.push({ number: i, text: pageText });
+
+              // Update progress
+              updateSearchProgress(Math.round((i / pdf.numPages) * 100));
             }
-            console.log("pdfText: " + pdfText);
+
             const searchTerms = terms.value
               .split("\n")
               .filter((term) => term.trim() !== "");
-            const searchResults = searchInText(pdfText, searchTerms);
-            displayResults(searchResults);
+
+            // Create a new AbortController for this search
+            currentSearchController = new AbortController();
+
+            searchInTextAsync(
+              pages,
+              searchTerms,
+              currentSearchController.signal
+            );
           } catch (err) {
             error.textContent = "Erro ao processar o PDF: " + err.message;
+            console.error("PDF processing error:", err);
           } finally {
             loading.style.display = "none";
           }
@@ -157,57 +227,108 @@
         }
       }
 
-      function searchInText(text, searchTerms) {
-        const results = [];
-        searchTerms.forEach((term) => {
-          const regex = new RegExp(`(.{0,200})${term}(.{0,200})`, "gi");
-          const matches = [];
-          let match;
-          while ((match = regex.exec(text)) !== null) {
-            matches.push(
-              match[0].replace(
-                new RegExp(`(${term})`, "gi"),
-                "<strong>$1</strong>"
-              )
-            );
-          }
-          if (matches.length > 0) {
-            results.push({
+      async function searchInTextAsync(pages, searchTerms, signal) {
+        results.innerHTML = "<h2>Resultados da Pesquisa:</h2>";
+        const searchResults = [];
+        let searchProgress = 0;
+        const totalSearches = pages.length * searchTerms.length;
+
+        try {
+          for (const term of searchTerms) {
+            if (signal.aborted) {
+              throw new DOMException("Search aborted", "AbortError");
+            }
+
+            let termResult = {
               term,
-              found: true,
-              occurrences: matches.length,
-              contexts: matches,
-            });
-          } else {
-            results.push({ term, found: false, occurrences: 0 });
+              found: false,
+              occurrences: 0,
+              contexts: [],
+            };
+
+            const resultDiv = document.createElement("div");
+            resultDiv.className = "result";
+            resultDiv.innerHTML = `<p><strong>${term}</strong>: Pesquisando...</p>`;
+            results.appendChild(resultDiv);
+
+            for (let i = 0; i < pages.length; i++) {
+              if (signal.aborted) {
+                throw new DOMException("Search aborted", "AbortError");
+              }
+
+              const page = pages[i];
+              const previousPage = i > 0 ? pages[i - 1] : null;
+              const nextPage = i < pages.length - 1 ? pages[i + 1] : null;
+              const regex = new RegExp(`(.{0,400}${term}.{0,400})`, "gi");
+              let match;
+
+              const searchText = previousPage && nextPage
+                ? previousPage.text.slice(-400) + page.text + nextPage.text.slice(0, 400)
+                : previousPage
+                  ? previousPage.text.slice(-400) + page.text
+                  : nextPage
+                    ? page.text + nextPage.text.slice(0, 400)
+                    : page.text;
+
+              while ((match = regex.exec(searchText)) !== null) {
+                const context = match[1].replace(
+                  new RegExp(`(${term})`, "gi"),
+                  "<strong>$1</strong>"
+                );
+                termResult.contexts.push({
+                  page: page.number,
+                  context: context,
+                });
+                termResult.occurrences++;
+                termResult.found = true;
+
+                // Update result in real-time
+                resultDiv.innerHTML = `
+                  <p><strong>${term}</strong>: Encontrado (${
+                  termResult.occurrences
+                } ocorrências)</p>
+                  ${termResult.contexts
+                    .map(
+                      (context) =>
+                        `<p class="context">Página <strong>${context.page}</strong>: ${context.context}</p>`
+                    )
+                    .join("")}
+                `;
+              }
+
+              // Update search progress
+              searchProgress++;
+              const progressPercentage = Math.round(
+                (searchProgress / totalSearches) * 100
+              );
+              updateSearchProgress(progressPercentage);
+
+              // Allow UI to update
+              await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+
+            if (!termResult.found) {
+              resultDiv.innerHTML = `<p><strong>${term}</strong>: Não encontrado</p>`;
+            }
+
+            searchResults.push(termResult);
           }
-        });
-        return results;
+        } catch (error) {
+          if (error.name === "AbortError") {
+            console.log("Search was aborted");
+          } else {
+            throw error;
+          }
+        }
       }
 
-      function displayResults(searchResults) {
-        results.innerHTML = "<h2>Resultados da Pesquisa:</h2>";
-        searchResults.forEach((result) => {
-          const resultDiv = document.createElement("div");
-          resultDiv.className = "result";
-          resultDiv.innerHTML = `
-                    <p><strong>${result.term}</strong>: ${
-            result.found
-              ? `Encontrado (${result.occurrences} ocorrências)`
-              : "Não encontrado"
-          }</p>
-                    ${
-                      result.found
-                        ? result.contexts
-                            .map(
-                              (context) => `<p class="context">${context}</p>`
-                            )
-                            .join("")
-                        : ""
-                    }
-                `;
-          results.appendChild(resultDiv);
-        });
+      function updateSearchProgress(percentage) {
+        const progressBarFill = document.getElementById("progress-bar-fill");
+        progressBarFill.style.width = `${percentage}%`;
+        progressBarFill.textContent = `${percentage}%`;
+        if (percentage === 100) {
+          progressBarFill.textContent = "Pesquisa concluída!";
+        }
       }
     </script>
   </body>
