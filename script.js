@@ -65,7 +65,13 @@ document.addEventListener("DOMContentLoaded", function () {
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
-          let pageText = textContent.items.map((item) => item.str).join("\n");
+          let pageText = textContent.items
+            .map((item) => item.str + (item.hasEOL ? "\n" : ""))
+            .join(" ");
+
+          if (i === 312 || i === 313) {
+            console.log(textContent, pageText);
+          }
 
           pageText = pageText.replace(/\s\s+/g, " ");
 
